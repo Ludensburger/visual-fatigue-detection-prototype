@@ -25,7 +25,6 @@ HEAD_MOVEMENT_THRESHOLD = 15  # Minimum head movement in pixels to be considered
 YAWN_ASPECT_RATIO_THRESHOLD = 0.5 # Adjust this value based on your observations, higher means a wider mouth
 
 # --- Feature Extraction Functions ---
-
 def eye_aspect_ratio(eye):
     """Calculates the Eye Aspect Ratio (EAR)."""
     # Compute the euclidean distances between the two sets of vertical eye landmarks (x, y)-coordinates

@@ -12,22 +12,27 @@ from collections import deque
 # - STAR ⭐: Important logic or calculations or something to Study further
 # - BOX 📦: Newly added Feature tags: optional, new feature, TWIST
 # - WORK IN PROGRESS 🚧: Feature that is not fully implemented yet (optional during presentation)
+# - FOR TESTING 👾: Use these code blocks for testing
+
+# Experimental Values for PERCLOS
+# - PERCLOS_THRESHOLD: 0.75 default was 0.6
+# - PERCLOS_DURATION: 20 default was 10
+# - THRESHOLD_SCALING: 0.70 default was 0.85
 
 # --- Configuration & Constants ---
-PERCLOS_THRESHOLD = 0.6  # Percentage of time eyes are closed to indicate fatigue, Ca be adjusted since the program on initialization calibrates based on the user's eye aspect ratio
-PERCLOS_DURATION = 10    # Calculate PERCLOS over last 60 seconds
-YAWN_ASPECT_RATIO_THRESHOLD = 0.5 # Threshold for yawn detection, Can be adjusted since the program on initialization calibrates based on the user's mouth aspect ratio
-BLINK_CONSEC_FRAMES = 2  # Minimum frames for blink detection
-CALIBRATION_DURATION = 3 # Seconds for calibration
-YAWN_MIN_FRAMES = 10     # Minimum frames to count as a yawn
+PERCLOS_THRESHOLD = 0.8  # Percentage of time eyes are closed to indicate fatigue, Ca be adjusted since the program on initialization calibrates based on the user's eye aspect ratio
+PERCLOS_DURATION = 20 # Calculate PERCLOS over last 60 seconds
+YAWN_ASPECT_RATIO_THRESHOLD = 0.6 # Threshold for yawn detection, Can be adjusted since the program on initialization calibrates based on the user's mouth aspect ratio
+BLINK_CONSEC_FRAMES = 3  # Minimum frames for blink detection
+CALIBRATION_DURATION = 3 # Seconds for calibration. During startup
+YAWN_MIN_FRAMES = 15    # Minimum frames to count as a yawn
 CAMERA_INDEX = 0        # Default camera index, can be changed if multiple cameras are available
-THRESHOLD_SCALING = 0.85 # Scaling factor for blink threshold, can be adjusted
-SACCADE_THRESHOLD = 0.01  # You might lower this to 0.005 for low-res/low-FPS setups
-SACCADE_SMOOTHING_WINDOW = 3  # ✅ Try 3 to 5 for noise reduction
+THRESHOLD_SCALING = 0.80 # Scaling factor for blink threshold, can be adjusted
+SACCADE_THRESHOLD = 0.003  # You might lower this to 0.005 for low-res/low-FPS setups
+SACCADE_SMOOTHING_WINDOW = 2  # ✅ Try 3 to 5 for noise reduction
 
 
 class MediaPipeFatigueTracker:
-
 
     # Initialize the MediaPipeFatigueTracker class
     # This is the constructor for the class — runs when you create an instance.
@@ -35,7 +40,7 @@ class MediaPipeFatigueTracker:
     # output_dir is a default parameter to define where to save data.
     # show_video toggles whether to display the video feed live.
     def __init__(self, output_dir="fatigue_data_mediapipe", show_video=True):
-
+        self.show_landmarks = True 
 
         # Handle import error gracefully
         try:
@@ -51,7 +56,7 @@ class MediaPipeFatigueTracker:
             # then we create an instance of the FaceMesh, which is our face tracker
             self.face_mesh = self.mp_face_mesh.FaceMesh(
                 static_image_mode=False, # Set to True for static images
-                # refine_landmarks=True,   # Refine landmarks for better accuracy (Optional)
+                refine_landmarks=True,   # Refine landmarks for better accuracy (Optional)
                 max_num_faces=1, # Maximum number of faces to detect, for this case just 1 user
                 min_detection_confidence=0.5, # Threshold for detection confidence
                 min_tracking_confidence=0.5 # Threshold for tracking confidence
@@ -248,6 +253,9 @@ class MediaPipeFatigueTracker:
         """Calibrate EAR threshold for the current user."""
         print("Calibrating blink detection... Please keep eyes open")
 
+        # Ensure the calibration window is always on top
+        cv2.namedWindow("Calibration", cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty("Calibration", cv2.WND_PROP_TOPMOST, 1)
         
         ear_values = [] # Initializes an empty list to store EAR values measured over the calibration period.
         start_time = time.time() # Records the current time to track how long calibration has been running.
@@ -538,7 +546,14 @@ class MediaPipeFatigueTracker:
 
         # BOX 📦
         # Note: Blink and saccade detection with MediaPipe requires different approaches based on landmark movements.
-        print("Blink and saccade detection might require different logic with MediaPipe.")
+        # print("Blink and saccade detection might require different logic with MediaPipe.")
+
+        # BOX 📦
+        # Saccade Statistics
+        if 'saccade_detected' in df.columns and not df['saccade_detected'].empty:
+            saccade_values = df['saccade_detected']
+            total_saccades = saccade_values.sum()
+            print(f"Total Saccades Detected: {total_saccades}")
 
 
     # BOX 📦
@@ -558,30 +573,46 @@ class MediaPipeFatigueTracker:
 
 
         """
+        
 
         # Skip if frame rate is too low
         if self.frame_rate < 15:
             print("⚠️ Low FPS may reduce saccade detection accuracy.")
+
+        # Ensure enough landmarks are present
+        if len(iris_landmarks) <= 473:
+            # Not enough landmarks for iris detection
+            return False
 
         # Get current iris center position (average of both irises for stability)
         left_iris = iris_landmarks[468]
         right_iris = iris_landmarks[473]
         iris_x = (left_iris.x + right_iris.x) / 2.0
         iris_y = (left_iris.y + right_iris.y) / 2.0
-        current_pos = (iris_x, iris_y)
 
-        # Initialize smoothing buffer if not yet
+        # Eye corners (use outer corners for both eyes)
+        left_eye_outer = iris_landmarks[33]
+        left_eye_inner = iris_landmarks[133]
+        right_eye_inner = iris_landmarks[362]
+        right_eye_outer = iris_landmarks[263]
+        # Average both eyes' corners for stability
+        eye_corner_x = (left_eye_outer.x + left_eye_inner.x + right_eye_inner.x + right_eye_outer.x) / 4.0
+        eye_corner_y = (left_eye_outer.y + left_eye_inner.y + right_eye_inner.y + right_eye_outer.y) / 4.0
+
+        # Relative iris position (iris center minus average eye corner)
+        rel_iris_x = iris_x - eye_corner_x
+        rel_iris_y = iris_y - eye_corner_y
+        current_rel_pos = (rel_iris_x, rel_iris_y)
+
+        # Smoothing buffer
         if not hasattr(self, "iris_history"):
             self.iris_history = deque(maxlen=SACCADE_SMOOTHING_WINDOW)
-
-        self.iris_history.append(current_pos)
+        self.iris_history.append(current_rel_pos)
 
         if len(self.iris_history) >= 2:
             dx = self.iris_history[-1][0] - self.iris_history[-2][0]
             dy = self.iris_history[-1][1] - self.iris_history[-2][1]
             distance = np.sqrt(dx**2 + dy**2)
-
-            # If sudden spike in distance, count as saccade
             if distance > SACCADE_THRESHOLD:
                 self.saccade_count += 1
                 return True
@@ -609,23 +640,38 @@ class MediaPipeFatigueTracker:
 
             # Saccade detection
             saccade_detected = self.detect_saccade(landmarks)
+
+
+            # BOX 
+            # 📦
+            fatigue = self.is_fatigued(window_sec=60)
             
             # Draw landmarks and info
             if self.show_video:
-                for landmark in landmarks:
-                    x, y = int(landmark.x * img_w), int(landmark.y * img_h)
-                    cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
+                if self.show_landmarks:
+                    for landmark in landmarks:
+                        x, y = int(landmark.x * img_w), int(landmark.y * img_h)
+                        cv2.circle(frame, (x, y), 1, (0, 255, 0), -1)
                 
                 # Eye status
                 eye_status = "EYES CLOSED" if blink_detected else "EYES OPEN"
                 eye_color = (0, 0, 255) if blink_detected else (0, 255, 0)
                 cv2.putText(frame, eye_status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, eye_color, 2)
-                
+
                 # Mouth status
                 mouth_status = "YAWNING" if yawn_detected else ""
                 mouth_color = (0, 0, 255) if yawn_detected else (0, 255, 0)
                 cv2.putText(frame, mouth_status, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, mouth_color, 2)
-                
+
+                # BOX 📦
+                # Saccade status (now below yawn)
+                if saccade_detected:
+                    cv2.putText(frame, "SACCADE!", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+                # --- Display Fatigue Status ---
+                if fatigue:
+                    cv2.putText(frame, "Fatigue", (400, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+
                 # Display metrics
                 info_text = [
                     f"EAR: {ear:.2f} (Thresh: {self.blink_threshold:.2f})",
@@ -636,7 +682,7 @@ class MediaPipeFatigueTracker:
                 ]
                 
                 for i, text in enumerate(info_text):
-                    cv2.putText(frame, text, (10, 90 + i*30), 
+                    cv2.putText(frame, text, (10, 120 + i*30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
         
         # Log data every frame (even if no face detected)
@@ -653,6 +699,49 @@ class MediaPipeFatigueTracker:
         })
         
         return frame
+    
+    def is_fatigued(self, window_sec=60):
+        # Get recent data for the last window_sec seconds
+        now = time.time() - self.start_time
+        recent = [d for d in self.current_session_data if now - d['timestamp'] <= window_sec]
+        if len(recent) < self.frame_rate * 10:  # Require at least 10 seconds of data
+            return False  # Not enough data yet
+
+        # Compute rates
+        perclos_vals = [d['perclos'] for d in recent]
+        yawn_count = recent[-1]['yawn_count'] - recent[0]['yawn_count']
+        blink_count = recent[-1]['blink_count'] - recent[0]['blink_count']
+        saccade_count = sum(d['saccade_detected'] for d in recent)
+        duration = recent[-1]['timestamp'] - recent[0]['timestamp']
+        if duration == 0:
+            duration = 1  # avoid division by zero
+
+        avg_perclos = np.mean(perclos_vals)
+        yawn_rate = yawn_count / duration  # yawns per second
+        blink_rate = blink_count / duration  # blinks per second
+        saccade_rate = saccade_count / duration  # saccades per second
+
+        # Data-driven fatigue logic (tune these thresholds for your use case)
+        # if (
+        #     avg_perclos > 0.7 and
+        #     yawn_rate > 0.01 and
+        #     blink_rate > 0.2 and
+        #     saccade_rate < 0.1
+        # ):
+        #     return True
+        # return False
+
+        # FOR TESTING 👾
+        if (
+            # Fatique detection may vary based on these values not just from a minimum value
+            # They are all tied together to form a deterministic result
+            avg_perclos > 0.5 or    # Lowered from 0.7 for easier triggering 
+            yawn_rate > 0.01 or    # Lowered from 0.01 (~3 yawns minimum)
+            blink_rate > 0.03 or    # Lowered from 0.2 (6 blinks minimum)
+            saccade_rate < 0.3      # Raised from 0.1 (3-4 saccades)
+        ):
+            return True
+        return False
 
     def save_session_data(self):
         """Save collected data with analysis and visualizations."""
@@ -693,8 +782,6 @@ class MediaPipeFatigueTracker:
         self.print_analysis(agg_df)
         self.print_summary_statistics(df)
 
-
-
     def run(self):
         """Main processing loop."""
         self.calibrate_blink_threshold()
@@ -720,9 +807,32 @@ class MediaPipeFatigueTracker:
                 last_fps_time = time.time()
             
             if self.show_video:
+
                 cv2.imshow("Fatigue Detection", processed_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+
+                # Show the window at the frontmost
+                cv2.setWindowProperty("Fatigue Detection", cv2.WND_PROP_TOPMOST, 1)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     break
+                elif key == ord(' '): # press space to toggle landmarks
+                    self.show_landmarks = not self.show_landmarks
+                    print(f"Show landmarks: {self.show_landmarks}")
+                elif key == ord('r'):  # Reset all data
+                    self.frame_count = 0
+                    self.start_time = time.time()
+                    self.ear_history.clear()
+                    self.ear_smoothed.clear()
+                    self.blink_count = 0
+                    self.yawn_count = 0
+                    self.session_start_time = datetime.datetime.now()
+                    self.current_session_data = []
+                    self.prev_iris_pos = None
+                    self.saccade_count = 0
+                    self.saccade_detected = False
+                    self.iris_history.clear()
+                    print("Data reset.")
         
         self.save_session_data()
         self.cap.release()
@@ -785,3 +895,14 @@ if __name__ == "__main__":
     CAMERA_INDEX = MediaPipeFatigueTracker.select_camera()
     tracker = MediaPipeFatigueTracker()
     tracker.run()
+
+"""
+Short answer:
+Lower saccade frequency usually means higher fatigue, and higher saccade frequency often means alertness.
+
+Quick explanation:
+Saccades are those quick, jerky eye movements you make when scanning your surroundings. 
+When you're alert, your eyes dart around a lot — more saccades. 
+But when you're fatigued or drowsy, your eyes slow down and make fewer or slower saccades.
+
+"""
